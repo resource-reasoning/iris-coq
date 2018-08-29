@@ -7,464 +7,117 @@ Set Default Proof Using "Type".
 Delimit Scope expr_scope with E.
 Delimit Scope val_scope with V.
 
+Parameter state : Type.
+Parameter action : Type.
+Parameter condition : Type.
+
+Parameter apply_action : state -> action -> state.
+Parameter test_condition : state -> condition -> bool.
+
+Parameter action_eq : EqDecision action.
+Declare Instance : EqDecision action.
+Parameter action_Countable : Countable action.
+Declare Instance : Countable action.
+
+Parameter condition_eq : EqDecision condition.
+Declare Instance : EqDecision condition.
+Parameter condition_Countable : Countable condition.
+Declare Instance : Countable condition.
+
+Parameter CTrue : condition.
+Parameter CTrue_spec : forall st, test_condition st CTrue = true.
+
 Module heap_lang.
 Open Scope Z_scope.
 
-(** Expressions and vals. *)
-Definition loc := positive. (* Really, any countable type. *)
+Definition position := positive.
 
-Inductive base_lit : Set :=
-  | LitInt (n : Z) | LitBool (b : bool) | LitUnit | LitLoc (l : loc).
-Inductive un_op : Set :=
-  | NegOp | MinusUnOp.
-Inductive bin_op : Set :=
-  | PlusOp | MinusOp | MultOp | QuotOp | RemOp (* Arithmetic *)
-  | AndOp | OrOp | XorOp (* Bitwise *)
-  | ShiftLOp | ShiftROp (* Shifts *)
-  | LeOp | LtOp | EqOp. (* Relations *)
+Inductive command :=
+  | Action (a : action)
+  | JumpIf (target : position) (C : condition)
+  | Assert (C : condition)
+  .
 
-Inductive binder := BAnon | BNamed : string → binder.
-Delimit Scope binder_scope with bind.
-Bind Scope binder_scope with binder.
-Definition cons_binder (mx : binder) (X : list string) : list string :=
-  match mx with BAnon => X | BNamed x => x :: X end.
-Infix ":b:" := cons_binder (at level 60, right associativity).
-Instance binder_eq_dec_eq : EqDecision binder.
-Proof. solve_decision. Defined.
+Definition program := list command.
 
-Instance set_unfold_cons_binder x mx X P :
-  SetUnfold (x ∈ X) P → SetUnfold (x ∈ mx :b: X) (BNamed x = mx ∨ P).
-Proof.
-  constructor. rewrite -(set_unfold (x ∈ X) P).
-  destruct mx; rewrite /= ?elem_of_cons; naive_solver.
-Qed.
+Definition read (p : program) (pc : position) : option command :=
+  nth_error p (Pos.to_nat pc).
 
-Inductive expr :=
-  (* Base lambda calculus *)
-  | Var (x : string)
-  | Rec (f x : binder) (e : expr)
-  | App (e1 e2 : expr)
-  (* Base types and their operations *)
-  | Lit (l : base_lit)
-  | UnOp (op : un_op) (e : expr)
-  | BinOp (op : bin_op) (e1 e2 : expr)
-  | If (e0 e1 e2 : expr)
-  (* Products *)
-  | Pair (e1 e2 : expr)
-  | Fst (e : expr)
-  | Snd (e : expr)
-  (* Sums *)
-  | InjL (e : expr)
-  | InjR (e : expr)
-  | Case (e0 : expr) (e1 : expr) (e2 : expr)
-  (* Concurrency *)
-  | Fork (e : expr)
-  (* Heap *)
-  | Alloc (e : expr)
-  | Load (e : expr)
-  | Store (e1 : expr) (e2 : expr)
-  | CAS (e0 : expr) (e1 : expr) (e2 : expr)
-  | FAA (e1 : expr) (e2 : expr).
+Bind Scope command_scope with command.
 
-Bind Scope expr_scope with expr.
-
-Fixpoint is_closed (X : list string) (e : expr) : bool :=
-  match e with
-  | Var x => bool_decide (x ∈ X)
-  | Rec f x e => is_closed (f :b: x :b: X) e
-  | Lit _ => true
-  | UnOp _ e | Fst e | Snd e | InjL e | InjR e | Fork e | Alloc e | Load e =>
-     is_closed X e
-  | App e1 e2 | BinOp _ e1 e2 | Pair e1 e2 | Store e1 e2 | FAA e1 e2 =>
-     is_closed X e1 && is_closed X e2
-  | If e0 e1 e2 | Case e0 e1 e2 | CAS e0 e1 e2 =>
-     is_closed X e0 && is_closed X e1 && is_closed X e2
-  end.
-
-Class Closed (X : list string) (e : expr) := closed : is_closed X e.
-Instance closed_proof_irrel X e : ProofIrrel (Closed X e).
-Proof. rewrite /Closed. apply _. Qed.
-Instance closed_dec X e : Decision (Closed X e).
-Proof. rewrite /Closed. apply _. Defined.
-
-Inductive val :=
-  | RecV (f x : binder) (e : expr) `{!Closed (f :b: x :b: []) e}
-  | LitV (l : base_lit)
-  | PairV (v1 v2 : val)
-  | InjLV (v : val)
-  | InjRV (v : val).
+Inductive value :=
+  | value_position (pc : position)
+  | value_halted
+  .
 
 Bind Scope val_scope with val.
 
-Fixpoint of_val (v : val) : expr :=
-  match v with
-  | RecV f x e => Rec f x e
-  | LitV l => Lit l
-  | PairV v1 v2 => Pair (of_val v1) (of_val v2)
-  | InjLV v => InjL (of_val v)
-  | InjRV v => InjR (of_val v)
-  end.
+Instance position_eq : EqDecision position.
+Proof. refine _. Defined.
 
-Fixpoint to_val (e : expr) : option val :=
-  match e with
-  | Rec f x e =>
-     if decide (Closed (f :b: x :b: []) e) then Some (RecV f x e) else None
-  | Lit l => Some (LitV l)
-  | Pair e1 e2 => v1 ← to_val e1; v2 ← to_val e2; Some (PairV v1 v2)
-  | InjL e => InjLV <$> to_val e
-  | InjR e => InjRV <$> to_val e
-  | _ => None
-  end.
+Instance position_countable : Countable position.
+Proof. refine _. Qed.
 
-(** We assume the following encoding of values to 64-bit words: The least 3
-significant bits of every word are a "tag", and we have 61 bits of payload,
-which is enough if all pointers are 8-byte-aligned (common on 64bit
-architectures). The tags have the following meaning:
-
-0: Payload is the data for a LitV (LitInt _).
-1: Payload is the data for a InjLV (LitV (LitInt _)).
-2: Payload is the data for a InjRV (LitV (LitInt _)).
-3: Payload is the data for a LitV (LitLoc _).
-4: Payload is the data for a InjLV (LitV (LitLoc _)).
-4: Payload is the data for a InjRV (LitV (LitLoc _)).
-6: Payload is one of the following finitely many values, which 61 bits are more
-   than enough to encode:
-   LitV LitUnit, InjLV (LitV LitUnit), InjRV (LitV LitUnit),
-   LitV (LitBool _), InjLV (LitV (LitBool _)), InjRV (LitV (LitBool _)).
-7: Value is boxed, i.e., payload is a pointer to some read-only memory area on
-   the heap which stores whether this is a RecV, PairV, InjLV or InjRV and the
-   relevant data for those cases. However, the boxed representation is never
-   used if any of the above representations could be used.
-
-Ignoring (as usual) the fact that we have to fit the infinite Z/loc into 61
-bits, this means every value is machine-word-sized and can hence be atomically
-read and written.  Also notice that the sets of boxed and unboxed values are
-disjoint. *)
-Definition val_is_unboxed (v : val) : Prop :=
-  match v with
-  | LitV _ => True
-  | InjLV (LitV _) => True
-  | InjRV (LitV _) => True
-  | _ => False
-  end.
-
-(** The state: heaps of vals. *)
-Definition state := gmap loc val.
-
-(** Equality and other typeclass stuff *)
-Lemma to_of_val v : to_val (of_val v) = Some v.
-Proof.
-  by induction v; simplify_option_eq; repeat f_equal; try apply (proof_irrel _).
-Qed.
-
-Lemma of_to_val e v : to_val e = Some v → of_val v = e.
-Proof.
-  revert v; induction e; intros v ?; simplify_option_eq; auto with f_equal.
-Qed.
-
-Instance of_val_inj : Inj (=) (=) of_val.
-Proof. by intros ?? Hv; apply (inj Some); rewrite -!to_of_val Hv. Qed.
-
-Instance base_lit_eq_dec : EqDecision base_lit.
+Instance command_eq : EqDecision command.
 Proof. solve_decision. Defined.
-Instance un_op_eq_dec : EqDecision un_op.
-Proof. solve_decision. Defined.
-Instance bin_op_eq_dec : EqDecision bin_op.
-Proof. solve_decision. Defined.
-Instance expr_eq_dec : EqDecision expr.
-Proof. solve_decision. Defined.
-Instance val_eq_dec : EqDecision val.
-Proof.
- refine (λ v v', cast_if (decide (of_val v = of_val v'))); abstract naive_solver.
-Defined.
 
-Instance base_lit_countable : Countable base_lit.
+Instance command_countable : Countable command.
 Proof.
- refine (inj_countable' (λ l, match l with
-  | LitInt n => inl (inl n) | LitBool b => inl (inr b)
-  | LitUnit => inr (inl ()) | LitLoc l => inr (inr l)
-  end) (λ l, match l with
-  | inl (inl n) => LitInt n | inl (inr b) => LitBool b
-  | inr (inl ()) => LitUnit | inr (inr l) => LitLoc l
-  end) _); by intros [].
-Qed.
-Instance un_op_finite : Countable un_op.
-Proof.
+(*
  refine (inj_countable' (λ op, match op with NegOp => 0 | MinusUnOp => 1 end)
   (λ n, match n with 0 => NegOp | _ => MinusUnOp end) _); by intros [].
-Qed.
-Instance bin_op_countable : Countable bin_op.
-Proof.
- refine (inj_countable' (λ op, match op with
-  | PlusOp => 0 | MinusOp => 1 | MultOp => 2 | QuotOp => 3 | RemOp => 4
-  | AndOp => 5 | OrOp => 6 | XorOp => 7 | ShiftLOp => 8 | ShiftROp => 9
-  | LeOp => 10 | LtOp => 11 | EqOp => 12
-  end) (λ n, match n with
-  | 0 => PlusOp | 1 => MinusOp | 2 => MultOp | 3 => QuotOp | 4 => RemOp
-  | 5 => AndOp | 6 => OrOp | 7 => XorOp | 8 => ShiftLOp | 9 => ShiftROp
-  | 10 => LeOp | 11 => LtOp | _ => EqOp
-  end) _); by intros [].
-Qed.
-Instance binder_countable : Countable binder.
-Proof.
- refine (inj_countable' (λ b, match b with BNamed s => Some s | BAnon => None end)
-  (λ b, match b with Some s => BNamed s | None => BAnon end) _); by intros [].
-Qed.
-Instance expr_countable : Countable expr.
-Proof.
- set (enc := fix go e :=
-  match e with
-  | Var x => GenLeaf (inl (inl x))
-  | Rec f x e => GenNode 0 [GenLeaf (inl (inr f)); GenLeaf (inl (inr x)); go e]
-  | App e1 e2 => GenNode 1 [go e1; go e2]
-  | Lit l => GenLeaf (inr (inl l))
-  | UnOp op e => GenNode 2 [GenLeaf (inr (inr (inl op))); go e]
-  | BinOp op e1 e2 => GenNode 3 [GenLeaf (inr (inr (inr op))); go e1; go e2]
-  | If e0 e1 e2 => GenNode 4 [go e0; go e1; go e2]
-  | Pair e1 e2 => GenNode 5 [go e1; go e2]
-  | Fst e => GenNode 6 [go e]
-  | Snd e => GenNode 7 [go e]
-  | InjL e => GenNode 8 [go e]
-  | InjR e => GenNode 9 [go e]
-  | Case e0 e1 e2 => GenNode 10 [go e0; go e1; go e2]
-  | Fork e => GenNode 11 [go e]
-  | Alloc e => GenNode 12 [go e]
-  | Load e => GenNode 13 [go e]
-  | Store e1 e2 => GenNode 14 [go e1; go e2]
-  | CAS e0 e1 e2 => GenNode 15 [go e0; go e1; go e2]
-  | FAA e1 e2 => GenNode 16 [go e1; go e2]
-  end).
- set (dec := fix go e :=
-  match e with
-  | GenLeaf (inl (inl x)) => Var x
-  | GenNode 0 [GenLeaf (inl (inr f)); GenLeaf (inl (inr x)); e] => Rec f x (go e)
-  | GenNode 1 [e1; e2] => App (go e1) (go e2)
-  | GenLeaf (inr (inl l)) => Lit l
-  | GenNode 2 [GenLeaf (inr (inr (inl op))); e] => UnOp op (go e)
-  | GenNode 3 [GenLeaf (inr (inr (inr op))); e1; e2] => BinOp op (go e1) (go e2)
-  | GenNode 4 [e0; e1; e2] => If (go e0) (go e1) (go e2)
-  | GenNode 5 [e1; e2] => Pair (go e1) (go e2)
-  | GenNode 6 [e] => Fst (go e)
-  | GenNode 7 [e] => Snd (go e)
-  | GenNode 8 [e] => InjL (go e)
-  | GenNode 9 [e] => InjR (go e)
-  | GenNode 10 [e0; e1; e2] => Case (go e0) (go e1) (go e2)
-  | GenNode 11 [e] => Fork (go e)
-  | GenNode 12 [e] => Alloc (go e)
-  | GenNode 13 [e] => Load (go e)
-  | GenNode 14 [e1; e2] => Store (go e1) (go e2)
-  | GenNode 15 [e0; e1; e2] => CAS (go e0) (go e1) (go e2)
-  | GenNode 16 [e1; e2] => FAA (go e1) (go e2)
-  | _ => Lit LitUnit (* dummy *)
-  end).
- refine (inj_countable' enc dec _). intros e. induction e; f_equal/=; auto.
-Qed.
-Instance val_countable : Countable val.
-Proof. refine (inj_countable of_val to_val _); auto using to_of_val. Qed.
+*)
+Admitted.
 
-Instance expr_inhabited : Inhabited expr := populate (Lit LitUnit).
-Instance val_inhabited : Inhabited val := populate (LitV LitUnit).
+Instance value_eq : EqDecision value.
+Proof. solve_decision. Defined.
+
+Instance value_countable : Countable value.
+Proof.
+  refine (inj_countable' (fun v => match v with value_halted => Pos.of_nat 0 | value_position pc => Pos.add 1 pc end)
+    (fun n => if decide (n = (Pos.of_nat 0)) then value_halted else value_position (Pos.sub n 1)) _).
+  intros [pc|].
+  - rewrite decide_False.
+    + apply f_equal. admit.
+    + admit.
+  - apply decide_True; by reflexivity.
+Admitted.
+
+Instance command_inhabited : Inhabited command := populate (Assert CTrue).
+Instance value_inhabited : Inhabited value := populate value_halted.
 
 Canonical Structure stateC := leibnizC state.
-Canonical Structure valC := leibnizC val.
-Canonical Structure exprC := leibnizC expr.
+Canonical Structure valC := leibnizC value.
+Canonical Structure commandC := leibnizC command.
 
-(** Evaluation contexts *)
-Inductive ectx_item :=
-  | AppLCtx (e2 : expr)
-  | AppRCtx (v1 : val)
-  | UnOpCtx (op : un_op)
-  | BinOpLCtx (op : bin_op) (e2 : expr)
-  | BinOpRCtx (op : bin_op) (v1 : val)
-  | IfCtx (e1 e2 : expr)
-  | PairLCtx (e2 : expr)
-  | PairRCtx (v1 : val)
-  | FstCtx
-  | SndCtx
-  | InjLCtx
-  | InjRCtx
-  | CaseCtx (e1 : expr) (e2 : expr)
-  | AllocCtx
-  | LoadCtx
-  | StoreLCtx (e2 : expr)
-  | StoreRCtx (v1 : val)
-  | CasLCtx (e1 : expr) (e2 : expr)
-  | CasMCtx (v0 : val) (e2 : expr)
-  | CasRCtx (v0 : val) (v1 : val)
-  | FaaLCtx (e2 : expr)
-  | FaaRCtx (v1 : val).
-
-Definition fill_item (Ki : ectx_item) (e : expr) : expr :=
-  match Ki with
-  | AppLCtx e2 => App e e2
-  | AppRCtx v1 => App (of_val v1) e
-  | UnOpCtx op => UnOp op e
-  | BinOpLCtx op e2 => BinOp op e e2
-  | BinOpRCtx op v1 => BinOp op (of_val v1) e
-  | IfCtx e1 e2 => If e e1 e2
-  | PairLCtx e2 => Pair e e2
-  | PairRCtx v1 => Pair (of_val v1) e
-  | FstCtx => Fst e
-  | SndCtx => Snd e
-  | InjLCtx => InjL e
-  | InjRCtx => InjR e
-  | CaseCtx e1 e2 => Case e e1 e2
-  | AllocCtx => Alloc e
-  | LoadCtx => Load e
-  | StoreLCtx e2 => Store e e2
-  | StoreRCtx v1 => Store (of_val v1) e
-  | CasLCtx e1 e2 => CAS e e1 e2
-  | CasMCtx v0 e2 => CAS (of_val v0) e e2
-  | CasRCtx v0 v1 => CAS (of_val v0) (of_val v1) e
-  | FaaLCtx e2 => FAA e e2
-  | FaaRCtx v1 => FAA (of_val v1) e
+Definition command_eval (st : state) (pc : position) (c : command) : option (state * position) :=
+  match c with
+  | Action a => Some (apply_action st a, Pos.add 1 pc)
+  | JumpIf target C =>
+    if test_condition st C then Some (st, target)
+    else None
+  | Assert C =>
+    if test_condition st C then Some (st, Pos.add 1 pc)
+    else None
   end.
 
-(** Substitution *)
-Fixpoint subst (x : string) (es : expr) (e : expr)  : expr :=
-  match e with
-  | Var y => if decide (x = y) then es else Var y
-  | Rec f y e =>
-     Rec f y $ if decide (BNamed x ≠ f ∧ BNamed x ≠ y) then subst x es e else e
-  | App e1 e2 => App (subst x es e1) (subst x es e2)
-  | Lit l => Lit l
-  | UnOp op e => UnOp op (subst x es e)
-  | BinOp op e1 e2 => BinOp op (subst x es e1) (subst x es e2)
-  | If e0 e1 e2 => If (subst x es e0) (subst x es e1) (subst x es e2)
-  | Pair e1 e2 => Pair (subst x es e1) (subst x es e2)
-  | Fst e => Fst (subst x es e)
-  | Snd e => Snd (subst x es e)
-  | InjL e => InjL (subst x es e)
-  | InjR e => InjR (subst x es e)
-  | Case e0 e1 e2 => Case (subst x es e0) (subst x es e1) (subst x es e2)
-  | Fork e => Fork (subst x es e)
-  | Alloc e => Alloc (subst x es e)
-  | Load e => Load (subst x es e)
-  | Store e1 e2 => Store (subst x es e1) (subst x es e2)
-  | CAS e0 e1 e2 => CAS (subst x es e0) (subst x es e1) (subst x es e2)
-  | FAA e1 e2 => FAA (subst x es e1) (subst x es e2)
+Definition position_eval (st : state) (p : program) (pc : position) : option (state * value) :=
+  match read p pc with
+  | None => Some (st, value_halted)
+  | Some c =>
+    match command_eval st pc c with
+    | None => None
+    | Some (st, p) => Some (st, value_position p)
+    end
   end.
 
-Definition subst' (mx : binder) (es : expr) : expr → expr :=
-  match mx with BNamed x => subst x es | BAnon => id end.
+Definition full_state : Type := state * program.
 
-(** The stepping relation *)
-Definition un_op_eval (op : un_op) (v : val) : option val :=
-  match op, v with
-  | NegOp, LitV (LitBool b) => Some $ LitV $ LitBool (negb b)
-  | NegOp, LitV (LitInt n) => Some $ LitV $ LitInt (Z.lnot n)
-  | MinusUnOp, LitV (LitInt n) => Some $ LitV $ LitInt (- n)
-  | _, _ => None
-  end.
-
-Definition bin_op_eval_int (op : bin_op) (n1 n2 : Z) : base_lit :=
-  match op with
-  | PlusOp => LitInt (n1 + n2)
-  | MinusOp => LitInt (n1 - n2)
-  | MultOp => LitInt (n1 * n2)
-  | QuotOp => LitInt (n1 `quot` n2)
-  | RemOp => LitInt (n1 `rem` n2)
-  | AndOp => LitInt (Z.land n1 n2)
-  | OrOp => LitInt (Z.lor n1 n2)
-  | XorOp => LitInt (Z.lxor n1 n2)
-  | ShiftLOp => LitInt (n1 ≪ n2)
-  | ShiftROp => LitInt (n1 ≫ n2)
-  | LeOp => LitBool (bool_decide (n1 ≤ n2))
-  | LtOp => LitBool (bool_decide (n1 < n2))
-  | EqOp => LitBool (bool_decide (n1 = n2))
-  end.
-
-Definition bin_op_eval_bool (op : bin_op) (b1 b2 : bool) : option base_lit :=
-  match op with
-  | PlusOp | MinusOp | MultOp | QuotOp | RemOp => None (* Arithmetic *)
-  | AndOp => Some (LitBool (b1 && b2))
-  | OrOp => Some (LitBool (b1 || b2))
-  | XorOp => Some (LitBool (xorb b1 b2))
-  | ShiftLOp | ShiftROp => None (* Shifts *)
-  | LeOp | LtOp => None (* InEquality *)
-  | EqOp => Some (LitBool (bool_decide (b1 = b2)))
-  end.
-
-Definition bin_op_eval (op : bin_op) (v1 v2 : val) : option val :=
-  if decide (op = EqOp) then Some $ LitV $ LitBool $ bool_decide (v1 = v2) else
-  match v1, v2 with
-  | LitV (LitInt n1), LitV (LitInt n2) => Some $ LitV $ bin_op_eval_int op n1 n2
-  | LitV (LitBool b1), LitV (LitBool b2) => LitV <$> bin_op_eval_bool op b1 b2
-  | _, _ => None
-  end.
-
-(** CAS just compares the word-sized representation of the two values, it cannot
-look into boxed data.  This works out fine if at least one of the to-be-compared
-values is unboxed (exploiting the fact that an unboxed and a boxed value can
-never be equal because these are disjoint sets).  *)
-Definition vals_cas_compare_safe (vl v1 : val) : Prop :=
-  val_is_unboxed vl ∨ val_is_unboxed v1.
-Arguments vals_cas_compare_safe !_ !_ /.
-
-Inductive head_step : expr → state → expr → state → list (expr) → Prop :=
-  | BetaS f x e1 e2 v2 e' σ :
-     to_val e2 = Some v2 →
-     Closed (f :b: x :b: []) e1 →
-     e' = subst' x (of_val v2) (subst' f (Rec f x e1) e1) →
-     head_step (App (Rec f x e1) e2) σ e' σ []
-  | UnOpS op e v v' σ :
-     to_val e = Some v →
-     un_op_eval op v = Some v' →
-     head_step (UnOp op e) σ (of_val v') σ []
-  | BinOpS op e1 e2 v1 v2 v' σ :
-     to_val e1 = Some v1 → to_val e2 = Some v2 →
-     bin_op_eval op v1 v2 = Some v' →
-     head_step (BinOp op e1 e2) σ (of_val v') σ []
-  | IfTrueS e1 e2 σ :
-     head_step (If (Lit $ LitBool true) e1 e2) σ e1 σ []
-  | IfFalseS e1 e2 σ :
-     head_step (If (Lit $ LitBool false) e1 e2) σ e2 σ []
-  | FstS e1 v1 e2 v2 σ :
-     to_val e1 = Some v1 → to_val e2 = Some v2 →
-     head_step (Fst (Pair e1 e2)) σ e1 σ []
-  | SndS e1 v1 e2 v2 σ :
-     to_val e1 = Some v1 → to_val e2 = Some v2 →
-     head_step (Snd (Pair e1 e2)) σ e2 σ []
-  | CaseLS e0 v0 e1 e2 σ :
-     to_val e0 = Some v0 →
-     head_step (Case (InjL e0) e1 e2) σ (App e1 e0) σ []
-  | CaseRS e0 v0 e1 e2 σ :
-     to_val e0 = Some v0 →
-     head_step (Case (InjR e0) e1 e2) σ (App e2 e0) σ []
-  | ForkS e σ:
-     head_step (Fork e) σ (Lit LitUnit) σ [e]
-  | AllocS e v σ l :
-     to_val e = Some v → σ !! l = None →
-     head_step (Alloc e) σ (Lit $ LitLoc l) (<[l:=v]>σ) []
-  | LoadS l v σ :
-     σ !! l = Some v →
-     head_step (Load (Lit $ LitLoc l)) σ (of_val v) σ []
-  | StoreS l e v σ :
-     to_val e = Some v → is_Some (σ !! l) →
-     head_step (Store (Lit $ LitLoc l) e) σ (Lit LitUnit) (<[l:=v]>σ) []
-  | CasFailS l e1 v1 e2 v2 vl σ :
-     to_val e1 = Some v1 → to_val e2 = Some v2 →
-     σ !! l = Some vl → vl ≠ v1 →
-     vals_cas_compare_safe vl v1 →
-     head_step (CAS (Lit $ LitLoc l) e1 e2) σ (Lit $ LitBool false) σ []
-  | CasSucS l e1 v1 e2 v2 σ :
-     to_val e1 = Some v1 → to_val e2 = Some v2 →
-     σ !! l = Some v1 →
-     vals_cas_compare_safe v1 v1 →
-     head_step (CAS (Lit $ LitLoc l) e1 e2) σ (Lit $ LitBool true) (<[l:=v2]>σ) []
-  | FaaS l i1 e2 i2 σ :
-     to_val e2 = Some (LitV (LitInt i2)) →
-     σ !! l = Some (LitV (LitInt i1)) →
-     head_step (FAA (Lit $ LitLoc l) e2) σ (Lit $ LitInt i1) (<[l:=LitV (LitInt (i1 + i2))]>σ) [].
-
-
-(** Basic properties about the language *)
-Instance fill_item_inj Ki : Inj (=) (=) (fill_item Ki).
-Proof. destruct Ki; intros ???; simplify_eq/=; auto with f_equal. Qed.
-
-Lemma fill_item_val Ki e :
-  is_Some (to_val (fill_item Ki e)) → is_Some (to_val e).
-Proof. intros [v ?]. destruct Ki; simplify_option_eq; eauto. Qed.
+Inductive head_step : position → full_state → position → full_state → list (position) → Prop :=
+  | head_step_cons pc st p st' pc' :
+    position_eval st p pc = Some (st', value_position pc') ->
+    head_step pc (st, p) pc' (st', p) []
+  .
 
 Lemma val_head_stuck e1 σ1 e2 σ2 efs : head_step e1 σ1 e2 σ2 efs → to_val e1 = None.
 Proof. destruct 1; naive_solver. Qed.
