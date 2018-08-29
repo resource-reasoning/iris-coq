@@ -107,19 +107,17 @@ Definition to_value (pc : option position) :=
   | Some _ => None
   end.
 
-(** Similarly, evaluation contexts are trivial as evaluation is strictly defined. **)
-Definition contexts := unit.
+(** Similarly, evaluation contexts are useless in such a language. **)
+Definition context : Type := False.
 
-Definition fill_context (_ : unit) (pc : option position) := pc.
+Definition fill_context (K : context) : option position -> option position :=
+  match K with end.
 
 Lemma heap_lang_mixin : EctxiLanguageMixin of_value to_value fill_context head_step.
 Proof.
   split; repeat intro; repeat match goal with v : unit |- _ => destruct v end; auto;
-    try solve [ repeat match goal with pc : option _ |- _ => destruct pc | H : _ |- _ => solve [ inversion H ] end; auto ].
-  - simpl in *. unfold fill_context in *. inversion H. subst.
-  - repeat match goal with pc : option _ |- _ => destruct pc | H : _ |- _ => solve [ inversion H ] end; auto.
-  apply _ || eauto using to_of_val, of_to_val, val_head_stuck,
-    fill_item_val, fill_item_no_val_inj, head_ctx_step_val.
+    try solve [ repeat match goal with pc : option _ |- _ => destruct pc
+                | H : _ |- _ => solve [ inversion H ] end; auto ].
 Qed.
 
 End heap_lang.
@@ -131,14 +129,3 @@ Canonical Structure heap_lang := LanguageOfEctx heap_ectx_lang.
 
 (* Prefer heap_lang names over ectx_language names. *)
 Export heap_lang.
-
-(** Define some derived forms. *)
-Notation Lam x e := (Rec BAnon x e) (only parsing).
-Notation Let x e1 e2 := (App (Lam x e2) e1) (only parsing).
-Notation Seq e1 e2 := (Let BAnon e1 e2) (only parsing).
-Notation LamV x e := (RecV BAnon x e) (only parsing).
-Notation LetCtx x e2 := (AppRCtx (LamV x e2)) (only parsing).
-Notation SeqCtx e2 := (LetCtx BAnon e2) (only parsing).
-Notation Match e0 x1 e1 x2 e2 := (Case e0 (Lam x1 e1) (Lam x2 e2)) (only parsing).
-
-Notation Skip := (Seq (Lit LitUnit) (Lit LitUnit)).
