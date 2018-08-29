@@ -45,13 +45,6 @@ Definition read (p : program) (pc : position) : option command :=
 
 Bind Scope command_scope with command.
 
-Inductive value :=
-  | value_position (pc : position)
-  | value_halted
-  .
-
-Bind Scope val_scope with val.
-
 Instance position_eq : EqDecision position.
 Proof. refine _. Defined.
 
@@ -69,25 +62,9 @@ Proof.
 *)
 Admitted.
 
-Instance value_eq : EqDecision value.
-Proof. solve_decision. Defined.
-
-Instance value_countable : Countable value.
-Proof.
-  refine (inj_countable' (fun v => match v with value_halted => Pos.of_nat 0 | value_position pc => Pos.add 1 pc end)
-    (fun n => if decide (n = (Pos.of_nat 0)) then value_halted else value_position (Pos.sub n 1)) _).
-  intros [pc|].
-  - rewrite decide_False.
-    + apply f_equal. admit.
-    + admit.
-  - apply decide_True; by reflexivity.
-Admitted.
-
 Instance command_inhabited : Inhabited command := populate (Assert CTrue).
-Instance value_inhabited : Inhabited value := populate value_halted.
 
 Canonical Structure stateC := leibnizC state.
-Canonical Structure valC := leibnizC value.
 Canonical Structure commandC := leibnizC command.
 
 Definition command_eval (st : state) (pc : position) (c : command) : option (state * position) :=
@@ -101,123 +78,50 @@ Definition command_eval (st : state) (pc : position) (c : command) : option (sta
     else None
   end.
 
-Definition position_eval (st : state) (p : program) (pc : position) : option (state * value) :=
+Definition position_eval (st : state) (p : program) (pc : position) : option (state * option position) :=
   match read p pc with
-  | None => Some (st, value_halted)
+  | None => Some (st, None)
   | Some c =>
     match command_eval st pc c with
     | None => None
-    | Some (st, p) => Some (st, value_position p)
+    | Some (st, p) => Some (st, Some p)
     end
   end.
 
+(** In this language, what is called the state in Iris includes the program. **)
 Definition full_state : Type := state * program.
 
-Inductive head_step : position → full_state → position → full_state → list (position) → Prop :=
+Inductive head_step : option position → full_state → option position → full_state → list (option position) → Prop :=
   | head_step_cons pc st p st' pc' :
-    position_eval st p pc = Some (st', value_position pc') ->
-    head_step pc (st, p) pc' (st', p) []
+    position_eval st p pc = Some (st', pc') ->
+    head_step (Some pc) (st, p) pc' (st', p) []
   .
 
-Lemma val_head_stuck e1 σ1 e2 σ2 efs : head_step e1 σ1 e2 σ2 efs → to_val e1 = None.
-Proof. destruct 1; naive_solver. Qed.
+(** There is only one value: the [None] construct, where the program is halted **)
+Definition value := unit.
 
-Lemma head_ctx_step_val Ki e σ1 e2 σ2 efs :
-  head_step (fill_item Ki e) σ1 e2 σ2 efs → is_Some (to_val e).
-Proof. destruct Ki; inversion_clear 1; simplify_option_eq; by eauto. Qed.
+Definition of_value (_ : unit) : option position := None.
+Definition to_value (pc : option position) :=
+  match pc with
+  | None => Some tt
+  | Some _ => None
+  end.
 
-Lemma fill_item_no_val_inj Ki1 Ki2 e1 e2 :
-  to_val e1 = None → to_val e2 = None →
-  fill_item Ki1 e1 = fill_item Ki2 e2 → Ki1 = Ki2.
+(** Similarly, evaluation contexts are trivial as evaluation is strictly defined. **)
+Definition contexts := unit.
+
+Definition fill_context (_ : unit) (pc : option position) := pc.
+
+Lemma heap_lang_mixin : EctxiLanguageMixin of_value to_value fill_context head_step.
 Proof.
-  destruct Ki1, Ki2; intros; try discriminate; simplify_eq/=;
-    repeat match goal with
-    | H : to_val (of_val _) = None |- _ => by rewrite to_of_val in H
-    end; auto.
-Qed.
-
-Lemma alloc_fresh e v σ :
-  let l := fresh (dom (gset loc) σ) in
-  to_val e = Some v → head_step (Alloc e) σ (Lit (LitLoc l)) (<[l:=v]>σ) [].
-Proof. by intros; apply AllocS, (not_elem_of_dom (D:=gset loc)), is_fresh. Qed.
-
-(* Misc *)
-Lemma to_val_rec f x e `{!Closed (f :b: x :b: []) e} :
-  to_val (Rec f x e) = Some (RecV f x e).
-Proof. rewrite /to_val. case_decide=> //. do 2 f_equal; apply proof_irrel. Qed.
-
-(** Closed expressions *)
-Lemma is_closed_weaken X Y e : is_closed X e → X ⊆ Y → is_closed Y e.
-Proof. revert X Y; induction e; naive_solver (eauto; set_solver). Qed.
-
-Lemma is_closed_weaken_nil X e : is_closed [] e → is_closed X e.
-Proof. intros. by apply is_closed_weaken with [], list_subseteq_nil. Qed.
-
-Lemma is_closed_of_val X v : is_closed X (of_val v).
-Proof. apply is_closed_weaken_nil. induction v; simpl; auto. Qed.
-
-Lemma is_closed_to_val X e v : to_val e = Some v → is_closed X e.
-Proof. intros <-%of_to_val. apply is_closed_of_val. Qed.
-
-Lemma is_closed_subst X e x es :
-  is_closed [] es → is_closed (x :: X) e → is_closed X (subst x es e).
-Proof.
-  intros ?. revert X.
-  induction e=> X /= ?; destruct_and?; split_and?; simplify_option_eq;
-    try match goal with
-    | H : ¬(_ ∧ _) |- _ => apply not_and_l in H as [?%dec_stable|?%dec_stable]
-    end; eauto using is_closed_weaken with set_solver.
-Qed.
-Lemma is_closed_do_subst' X e x es :
-  is_closed [] es → is_closed (x :b: X) e → is_closed X (subst' x es e).
-Proof. destruct x; eauto using is_closed_subst. Qed.
-
-(* Substitution *)
-Lemma subst_is_closed X e x es : is_closed X e → x ∉ X → subst x es e = e.
-Proof.
-  revert X. induction e=> X /=; rewrite ?bool_decide_spec ?andb_True=> ??;
-    repeat case_decide; simplify_eq/=; f_equal; intuition eauto with set_solver.
-Qed.
-
-Lemma subst_is_closed_nil e x es : is_closed [] e → subst x es e = e.
-Proof. intros. apply subst_is_closed with []; set_solver. Qed.
-
-Lemma subst_subst e x es es' :
-  Closed [] es' → subst x es (subst x es' e) = subst x es' e.
-Proof.
-  intros. induction e; simpl; try (f_equal; by auto);
-    simplify_option_eq; auto using subst_is_closed_nil with f_equal.
-Qed.
-Lemma subst_subst' e x es es' :
-  Closed [] es' → subst' x es (subst' x es' e) = subst' x es' e.
-Proof. destruct x; simpl; auto using subst_subst. Qed.
-
-Lemma subst_subst_ne e x y es es' :
-  Closed [] es → Closed [] es' → x ≠ y →
-  subst x es (subst y es' e) = subst y es' (subst x es e).
-Proof.
-  intros. induction e; simpl; try (f_equal; by auto);
-    simplify_option_eq; auto using eq_sym, subst_is_closed_nil with f_equal.
-Qed.
-Lemma subst_subst_ne' e x y es es' :
-  Closed [] es → Closed [] es' → x ≠ y →
-  subst' x es (subst' y es' e) = subst' y es' (subst' x es e).
-Proof. destruct x, y; simpl; auto using subst_subst_ne with congruence. Qed.
-
-Lemma subst_rec' f y e x es :
-  x = f ∨ x = y ∨ x = BAnon →
-  subst' x es (Rec f y e) = Rec f y e.
-Proof. intros. destruct x; simplify_option_eq; naive_solver. Qed.
-Lemma subst_rec_ne' f y e x es :
-  (x ≠ f ∨ f = BAnon) → (x ≠ y ∨ y = BAnon) →
-  subst' x es (Rec f y e) = Rec f y (subst' x es e).
-Proof. intros. destruct x; simplify_option_eq; naive_solver. Qed.
-
-Lemma heap_lang_mixin : EctxiLanguageMixin of_val to_val fill_item head_step.
-Proof.
-  split; apply _ || eauto using to_of_val, of_to_val, val_head_stuck,
+  split; repeat intro; repeat match goal with v : unit |- _ => destruct v end; auto;
+    try solve [ repeat match goal with pc : option _ |- _ => destruct pc | H : _ |- _ => solve [ inversion H ] end; auto ].
+  - simpl in *. unfold fill_context in *. inversion H. subst.
+  - repeat match goal with pc : option _ |- _ => destruct pc | H : _ |- _ => solve [ inversion H ] end; auto.
+  apply _ || eauto using to_of_val, of_to_val, val_head_stuck,
     fill_item_val, fill_item_no_val_inj, head_ctx_step_val.
 Qed.
+
 End heap_lang.
 
 (** Language *)
