@@ -16,12 +16,18 @@ Hypothesis action_wpp : action -> iProp Sigma -> iProp Sigma -> Prop.
 
 Definition condition_to_predicate condition state :=
   test_condition state condition = true.
-
 Coercion condition_to_predicate : condition >-> Funclass.
+
+(** We assume that we can translate conditions to formulae on the state.
+  Such a translation would probably be done by defining a [heapG] instance,
+  using the [atomic_heap] class. **)
+Variable condition_to_iProp : condition -> iProp Sigma.
 
 Inductive wpp : command -> iProp Sigma -> iProp Sigma -> Prop :=
   | wpp_jump : forall i C Phi,
-    wpp (JumpIf i C) (⌜ C (* Unfortunately, this can’t be pure as it refers the state. The file theories/base_logic/lib/gen_heap.v defines a model for [mapsto] based on the \bullet and \circ states. Do we have to build a new one here? *) ⌝ ∗ ▷ Phi)%I Phi
+    wpp (JumpIf i C) (~ condition_to_iProp C ∗ ▷ Phi)%I Phi
+  | wpp_assert : forall i C Phi,
+    wpp (Assert C) (condition_to_iProp C ∗ ▷ Phi)%I Phi
   | wpp_action : forall a Phi Psi,
     action_wpp a Phi Psi ->
     wpp (Action a) Phi Psi
