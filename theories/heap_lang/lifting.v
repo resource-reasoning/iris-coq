@@ -7,6 +7,26 @@ From iris.proofmode Require Import tactics.
 From stdpp Require Import fin_maps.
 Set Default Proof Using "Type".
 
+Section Lifting.
+
+(** We don’t need any specific formalisation of the heap for this particular language. **)
+Variable Sigma : gFunctors.
+
+Hypothesis action_wpp : action -> iProp Sigma -> iProp Sigma -> Prop.
+
+Definition condition_to_predicate condition state :=
+  test_condition state condition = true.
+
+Coercion condition_to_predicate : condition >-> Funclass.
+
+Inductive wpp : command -> iProp Sigma -> iProp Sigma -> Prop :=
+  | wpp_jump : forall i C Phi,
+    wpp (JumpIf i C) (⌜ C (* Unfortunately, this can’t be pure as it refers the state. The file theories/base_logic/lib/gen_heap.v defines a model for [mapsto] based on the \bullet and \circ states. Do we have to build a new one here? *) ⌝ ∗ ▷ Phi)%I Phi
+  | wpp_action : forall a Phi Psi,
+    action_wpp a Phi Psi ->
+    wpp (Action a) Phi Psi
+  .
+
 Class heapG Σ := HeapG {
   heapG_invG : invG Σ;
   heapG_gen_heapG :> gen_heapG loc val Σ
