@@ -12,7 +12,6 @@ Parameter action : Type.
 Parameter condition : Type.
 
 Parameter apply_action : state -> action -> state.
-Parameter test_condition : state -> condition -> bool.
 
 Parameter action_eq : EqDecision action.
 Declare Instance : EqDecision action.
@@ -25,17 +24,47 @@ Parameter condition_Countable : Countable condition.
 Declare Instance : Countable condition.
 
 Parameter CTrue : condition.
-Parameter CTrue_spec : forall st, test_condition st CTrue = true.
+Parameter CFalse : condition.
 
 Module heap_lang.
 Open Scope Z_scope.
 
 Definition position := positive.
 
+(** Definition of commands **)
 Inductive command :=
   | Action (a : action)
   | JumpIf (target : position) (C : condition)
   | Assert (C : condition)
+  .
+
+(** Expressions carry what is need to continue the execution.
+  At first, I thought that expression would only consist of
+  positions.
+  However, some commands need to be reduced in several steps.
+  For instance, an [Assert C] command must first reduce to a
+  [Assert CTrue] command to be executed.
+  I also added an [Error] case.  This is not a return value:
+  it is just an expression with no semantics.  It is being
+  needed as Iris supposes that the [fill_item] function is
+  total, which is obviously not the case in a typed setting.
+  I thus need a dummy expression for this case.  A better
+  fix would be to change Iris altogether to make it accept
+  non-total [fill_item] functions. **)
+
+(** Expect that this would not ork because Iris forces the
+  [fill_item] function to take an expression (Iris has
+  clearly not be done with types in mind… at least not in
+  the analysed programming laguage—this is so frustrating!)
+  and not something else, like a condition.  We could add
+  again a dummy case for that, but this is going to be too
+  strange. **)
+
+Inductive expression :=
+  | PC (pc : position)
+  | PCC (pc : position) (c : command)
+  | Halted
+  | Error
   .
 
 Definition program := list command.
@@ -44,6 +73,27 @@ Definition read (p : program) (pc : position) : option command :=
   nth_error p (Pos.to_nat pc).
 
 Bind Scope command_scope with command.
+
+(** Only the [Halted] expression doesn’t reduce.
+   The value type is thus a type with only one inhabitant: unit. **)
+
+Definition of_val (_ : ()) := Halted.
+Definition to_val e :=
+  match e with
+  | Halted => Some ()
+  | _ => None
+  end.
+
+(** Small-step states includes the state, but also the program. **)
+Definition ssstate : Type := state * program.
+
+Lemma to_of_val v : to_val (of_val v) = Some v.
+Proof. by destruct v. Qed.
+
+Lemma of_to_val e v : to_val e = Some v -> of_val v = e.
+Proof. destruct v. intro E. by destruct e. Qed.
+
+(** Typeclasses **)
 
 Instance position_eq : EqDecision position.
 Proof. refine _. Defined.
@@ -54,18 +104,61 @@ Proof. refine _. Qed.
 Instance command_eq : EqDecision command.
 Proof. solve_decision. Defined.
 
+Definition encode_command c :=
+  match c with
+  | Action a => inl (inl a)
+  | JumpIf target C => inl (inr (target, C))
+  | Assert C => inr C
+  end.
+
+Definition decode_command c :=
+  match c with
+  | inl (inl a) => Action a
+  | inl (inr (target, C)) => JumpIf target C
+  | inr C => Assert C
+  end.
+
 Instance command_countable : Countable command.
-Proof.
-(*
- refine (inj_countable' (λ op, match op with NegOp => 0 | MinusUnOp => 1 end)
-  (λ n, match n with 0 => NegOp | _ => MinusUnOp end) _); by intros [].
-*)
-Admitted.
+Proof. refine (inj_countable' encode_command decode_command _); by intros []. Qed.
 
-Instance command_inhabited : Inhabited command := populate (Assert CTrue).
+Instance expression_eq : EqDecision expression.
+Proof. solve_decision. Defined.
 
-Canonical Structure stateC := leibnizC state.
+Definition encode_expression e :=
+  match e with
+  | PC pc => inl (inl pc)
+  | PCC pc c => inl (inr (pc, c))
+  | Halted => inr (inl ())
+  | Error => inr (inr ())
+  end.
+
+Definition decode_expression e :=
+  match e with
+  | inl (inl pc) => PC pc
+  | inl (inr (pc, c)) => PCC pc c
+  | inr (inl ()) => Halted
+  | inr (inr ()) => Error
+  end.
+
+Instance expression_countable : Countable expression.
+Proof. refine (inj_countable' encode_expression decode_expression _); by intros []. Qed.
+
+Instance command_inhabited : Inhabited command := populate (Assert CFalse).
+Instance expression_inhabited : Inhabited expression := populate Error.
+
+Canonical Structure ssstateC := leibnizC ssstate.
 Canonical Structure commandC := leibnizC command.
+Canonical Structure unitC := leibnizC unit.
+Canonical Structure expressionC := leibnizC expression.
+
+(** Evaluation contexts **)
+
+(** The only cases when we use evaluation contexts in this language is when a condition
+   has to be reduced to either [CTrue] or [CFalse].  This can happen in either the
+   [JumpIf] case or the [Assert] case. **)
+
+Inductive context :=
+  | context_JumpIf (pc : position) (target : position)
 
 Definition command_eval (st : state) (pc : position) (c : command) : option (state * position) :=
   match c with
