@@ -12,8 +12,10 @@ Section Lifting.
 (** We don’t need any specific formalisation of the heap for this particular language. **)
 Variable Sigma : gFunctors.
 
-Hypothesis action_wpp : action -> iProp Sigma -> iProp Sigma -> Prop.
+Hypothesis WPA : action -> iProp Sigma -> iProp Sigma -> Prop.
+Hypothesis WPC : condition -> iProp Sigma -> iProp Sigma -> Prop.
 
+(* TODO: Define WPP and WPJ
 Definition condition_to_predicate condition state :=
   test_condition state condition = true.
 Coercion condition_to_predicate : condition >-> Funclass.
@@ -32,6 +34,20 @@ Inductive wpp : command -> iProp Sigma -> iProp Sigma -> Prop :=
     action_wpp a Phi Psi ->
     wpp (Action a) Phi Psi
   .
+*)
+
+Implicit Types Φ : unit → iProp Sigma.
+
+Lemma wp_halted Φ :
+  Φ () ⊢ WP Halted {{ Φ }}.
+Proof.
+  iIntros (<- Φ) "Hl HΦ".
+  iApply twp_lift_atomic_head_step_no_fork; auto.
+  iIntros (σ1) "Hσ !>". iDestruct (@gen_heap_valid with "Hσ Hl") as %?.
+  iSplit; first by eauto. iIntros (v2' σ2 efs Hstep); inv_head_step.
+  iMod (@gen_heap_update with "Hσ Hl") as "[$ Hl]".
+  iModIntro. iSplit=>//. by iApply "HΦ".
+Qed.
 
 Class heapG Σ := HeapG {
   heapG_invG : invG Σ;
